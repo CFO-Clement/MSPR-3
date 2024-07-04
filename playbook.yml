@@ -1,0 +1,198 @@
+---
+- hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    mariadb_root_password: ""
+    mariadb_admin_password: "admin"
+    prometheus_version: "2.36.0"
+    mysqld_exporter_version: "0.13.0"
+
+  tasks:
+    - name: Installation de MariaDB
+      apt:
+        name: mariadb-server
+        state: present
+        update_cache: yes
+
+    - name: Configuration de MariaDB
+      template:
+        src: my.cnf.j2
+        dest: /etc/mysql/my.cnf
+
+    - name: Configure for root
+      template:
+        src: my.cnf.j2
+        dest: /root/.my.cnf
+     
+    - name: Restart mariaDB
+      service:
+        name: mariadb
+        state: restarted
+
+    - name: Creation d'utilisateur admin pour MariaDB
+      mysql_user:
+        login_unix_socket: /run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ mariadb_root_password }}"
+        name: admin
+        password: "{{ mariadb_admin_password }}"
+        priv: '*.*:ALL,GRANT'
+        state: present
+
+    - name: Execution du script SQL
+      mysql_db:
+        login_unix_socket: /run/mysqld/mysqld.sock
+        login_user: admin
+        login_password: "{{ mariadb_admin_password }}"
+        name: ma_base
+        state: import
+        target: schema.sql
+  
+    - name: Create Prometheus user
+      user:
+        name: prometheus
+        system: yes
+        shell: /bin/false
+
+    - name: Create required Prometheus directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+        mode: '0755'
+      loop:
+        - /etc/prometheus
+        - /var/lib/prometheus
+        - /etc/prometheus/consoles
+        - /etc/prometheus/console_libraries
+        - /opt/prometheus_temp
+
+    - name: Copy Prometheus configuration file
+      copy:
+        src: prometheus.yml
+        dest: /etc/prometheus/prometheus.yml
+        owner: prometheus
+        group: prometheus
+        mode: '0644'
+
+    - name: Install Prometheus dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - wget
+        - tar
+
+    - name: Download Prometheus tarball if not present
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v2.33.1/prometheus-2.33.1.linux-amd64.tar.gz"
+        dest: /tmp/prometheus.tar.gz
+
+    - name: Extract Prometheus to a temporary directory
+      unarchive:
+        src: /tmp/prometheus.tar.gz
+        dest: /opt/prometheus_temp
+        remote_src: yes
+        creates: /opt/prometheus_temp/prometheus-2.33.1.linux-amd64
+
+    - name: Move Prometheus binaries to /usr/local/bin
+      command: mv /opt/prometheus_temp/prometheus-2.33.1.linux-amd64/prometheus /usr/local/bin/prometheus
+      args:
+        creates: /usr/local/bin/prometheus
+
+    - name: Move Prometheus node exporter to /usr/local/bin
+      command: mv /opt/prometheus_temp/prometheus-2.33.1.linux-amd64/promtool /usr/local/bin/promtool
+      args:
+        creates: /usr/local/bin/promtool
+
+    - name: Clean up temporary Prometheus directory
+      file:
+        path: /opt/prometheus_temp
+        state: absent
+
+    - name: Copy Prometheus systemd service file
+      copy:
+        src: prometheus.service
+        dest: /etc/systemd/system/prometheus.service
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Reload systemd to recognize new Prometheus service
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start Prometheus service
+      systemd:
+        name: prometheus
+        enabled: yes
+        state: started
+    
+    - name: Telechargement de l'exporteur MariaDB
+      get_url:
+        url: "https://github.com/prometheus/mysqld_exporter/releases/download/v{{ mysqld_exporter_version }}/mysqld_exporter-{{ mysqld_exporter_version }}.linux-amd64.tar.gz"
+        dest: "/tmp/mysqld_exporter.tar.gz"
+
+    - name: Extraction de l'exporteur MariaDB
+      unarchive:
+        src: "/tmp/mysqld_exporter.tar.gz"
+        dest: "/opt/"
+        remote_src: yes
+
+    - name: Configuration de l'exporteur MariaDB
+      copy:
+        content: |
+          DATA_SOURCE_NAME='admin:{{ mariadb_admin_password }}@(localhost:3306)/'
+        dest: "/opt/mysqld_exporter-{{ mysqld_exporter_version }}.linux-amd64/.env"
+
+    - name: Installation des d\u00e9pendances n\u00e9cessaires
+      apt:
+        name:
+          - apt-transport-https
+          - software-properties-common
+          - ca-certificates
+          - curl
+        state: present
+
+    - name: Ajout de la cl\u00e9 du d\u00e9p\u00f4t Grafana
+      apt_key:
+        url: https://packages.grafana.com/gpg.key
+        state: present
+
+    - name: Ajout du d\u00e9p\u00f4t Grafana
+      apt_repository:
+        repo: 'deb https://packages.grafana.com/oss/deb stable main'
+        state: present
+        update_cache: yes
+
+    - name: Installation de Grafana
+      apt:
+        name: grafana
+        state: present
+
+    - name: D\u00e9marrage et activation du service Grafana
+      systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+        
+    - name: Copie du fichier unitaire systemd pour mysqld_exporter
+      copy:
+        src: mysqld_exporter.service
+        dest: /etc/systemd/system/mysqld_exporter.service
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Recharger les unit\u00e9s systemd pour prendre en compte les nouveaux changements
+      systemd:
+        daemon_reload: yes
+
+    - name: Activer et d\u00e9marrer le service mysqld_exporter
+      systemd:
+        name: mysqld_exporter
+        enabled: yes
+        state: started

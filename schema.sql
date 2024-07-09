@@ -107,9 +107,9 @@ CREATE TABLE VERSION (
   version VARCHAR(10)
 );
 
-CREATE UNIQUE INDEX ON CLIENT (person_id);
+CREATE UNIQUE INDEX idx_person_id ON CLIENT (person_id);
 
-CREATE UNIQUE INDEX ON INCIDENT (person_id);
+CREATE UNIQUE INDEX idx_person_id ON INCIDENT (person_id);
 
 ALTER TABLE ASSOCIER ADD FOREIGN KEY (serial_number) REFERENCES HARVESTER (serial_number);
 
